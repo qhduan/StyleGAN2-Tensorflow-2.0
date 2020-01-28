@@ -13,7 +13,6 @@ import tensorflow as tf
 
 
 class Conv2DMod(Layer):
-
     def __init__(self,
                  filters,
                  kernel_size,
@@ -29,17 +28,18 @@ class Conv2DMod(Layer):
         super(Conv2DMod, self).__init__(**kwargs)
         self.filters = filters
         self.rank = 2
-        self.kernel_size = conv_utils.normalize_tuple(kernel_size, 2, 'kernel_size')
+        self.kernel_size = conv_utils.normalize_tuple(kernel_size, 2,
+                                                      'kernel_size')
         self.strides = conv_utils.normalize_tuple(strides, 2, 'strides')
         self.padding = conv_utils.normalize_padding(padding)
-        self.dilation_rate = conv_utils.normalize_tuple(dilation_rate, 2, 'dilation_rate')
+        self.dilation_rate = conv_utils.normalize_tuple(
+            dilation_rate, 2, 'dilation_rate')
         self.kernel_initializer = initializers.get(kernel_initializer)
         self.kernel_regularizer = regularizers.get(kernel_regularizer)
         self.activity_regularizer = regularizers.get(activity_regularizer)
         self.kernel_constraint = constraints.get(kernel_constraint)
         self.demod = demod
-        self.input_spec = [InputSpec(ndim = 4),
-                            InputSpec(ndim = 2)]
+        self.input_spec = [InputSpec(ndim=4), InputSpec(ndim=2)]
 
     def build(self, input_shape):
         channel_axis = -1
@@ -50,7 +50,9 @@ class Conv2DMod(Layer):
         kernel_shape = self.kernel_size + (input_dim, self.filters)
 
         if input_shape[1][-1] != input_dim:
-            raise ValueError('The last dimension of modulation input should be equal to input dimension.')
+            raise ValueError(
+                'The last dimension of modulation input should be equal to input dimension.'  # noqa
+            )
 
         self.kernel = self.add_weight(shape=kernel_shape,
                                       initializer=self.kernel_initializer,
@@ -59,42 +61,74 @@ class Conv2DMod(Layer):
                                       constraint=self.kernel_constraint)
 
         # Set input spec.
-        self.input_spec = [InputSpec(ndim=4, axes={channel_axis: input_dim}),
-                            InputSpec(ndim=2)]
+        self.input_spec = [
+            InputSpec(ndim=4, axes={channel_axis: input_dim}),
+            InputSpec(ndim=2)
+        ]
         self.built = True
 
     def call(self, inputs):
 
-        #To channels last
+        # import pdb; pdb.set_trace()
+        # To channels last
         x = tf.transpose(inputs[0], [0, 3, 1, 2])
 
-        #Get weight and bias modulations
-        #Make sure w's shape is compatible with self.kernel
-        w = K.expand_dims(K.expand_dims(K.expand_dims(inputs[1], axis = 1), axis = 1), axis = -1)
+        # Get weight and bias modulations
+        # Make sure w's shape is compatible with self.kernel
+        # print('www', inputs[1])
+        w = K.expand_dims(K.expand_dims(K.expand_dims(inputs[1], axis=1),
+                                        axis=1),
+                          axis=-1)
 
-        #Add minibatch layer to weights
-        wo = K.expand_dims(self.kernel, axis = 0)
+        # Add minibatch layer to weights
+        wo = K.expand_dims(self.kernel, axis=0)
 
-        #Modulate
-        weights = wo * (w+1)
+        # Modulate
+        weights = wo * (w + 1)
 
-        #Demodulate
+        # print('weights 1', weights.shape, wo.shape, w.shape)
+
+        # Demodulate
         if self.demod:
-            d = K.sqrt(K.sum(K.square(weights), axis=[1,2,3], keepdims = True) + 1e-8)
+            d = K.sqrt(
+                K.sum(K.square(weights), axis=[1, 2, 3], keepdims=True) + 1e-8)
             weights = weights / d
+        # print('weights 2', weights.shape)
 
-        #Reshape/scale input
-        x = tf.reshape(x, [1, -1, x.shape[2], x.shape[3]]) # Fused => reshape minibatch to convolution groups.
-        w = tf.reshape(tf.transpose(weights, [1, 2, 3, 0, 4]), [weights.shape[1], weights.shape[2], weights.shape[3], -1])
+        # Changed because CPU mode DO NOT support groups and NCHW
+        # Reshape/scale input
+        # x = tf.reshape(x,
+        #                [1, -1, x.shape[2], x.shape[3]
+        #                 ])  # Fused => reshape minibatch to convolution groups.
+        # w = tf.reshape(
+        #     tf.transpose(weights, [1, 2, 3, 0, 4]),
+        #     [weights.shape[3], weights.shape[1], weights.shape[2], -1])
 
-        x = tf.nn.conv2d(x, w,
-                strides=self.strides,
-                padding="SAME",
-                data_format="NCHW")
-
-        # Reshape/scale output.
-        x = tf.reshape(x, [-1, self.filters, x.shape[2], x.shape[3]]) # Fused => reshape convolution groups back to minibatch.
+        # HCHW --> NHWC
+        # before x: (1, None, 4, 4) w: (96, 3, 3, None)
+        # after x:
         x = tf.transpose(x, [0, 2, 3, 1])
+        # w = tf.transpose(w, [1, 2, 0, 3])
+        # print(x.shape, w.shape)
+        # import pdb; pdb.set_trace()
+        rets = []
+        for i in range(16):
+            ret = tf.nn.conv2d(x[i:i + 1],
+                               weights[i],
+                               strides=self.strides,
+                               padding="SAME",
+                               data_format="NHWC")
+            rets.append(ret)
+        x = tf.keras.layers.Concatenate(axis=0)(rets)
+
+        # NHWC --> NCHW
+        # x = tf.transpose(x, [0, 3, 1, 2])
+
+        # # Reshape/scale output.
+        # x = tf.reshape(
+        #     x, [-1, self.filters, x.shape[2], x.shape[3]
+        #         ])  # Fused => reshape convolution groups back to minibatch.
+        # x = tf.transpose(x, [0, 2, 3, 1])
 
         return x
 
@@ -110,21 +144,30 @@ class Conv2DMod(Layer):
                 dilation=self.dilation_rate[i])
             new_space.append(new_dim)
 
-        return (input_shape[0],) + tuple(new_space) + (self.filters,)
+        return (input_shape[0], ) + tuple(new_space) + (self.filters, )
 
     def get_config(self):
         config = {
-            'filters': self.filters,
-            'kernel_size': self.kernel_size,
-            'strides': self.strides,
-            'padding': self.padding,
-            'dilation_rate': self.dilation_rate,
-            'kernel_initializer': initializers.serialize(self.kernel_initializer),
-            'kernel_regularizer': regularizers.serialize(self.kernel_regularizer),
+            'filters':
+            self.filters,
+            'kernel_size':
+            self.kernel_size,
+            'strides':
+            self.strides,
+            'padding':
+            self.padding,
+            'dilation_rate':
+            self.dilation_rate,
+            'kernel_initializer':
+            initializers.serialize(self.kernel_initializer),
+            'kernel_regularizer':
+            regularizers.serialize(self.kernel_regularizer),
             'activity_regularizer':
-                regularizers.serialize(self.activity_regularizer),
-            'kernel_constraint': constraints.serialize(self.kernel_constraint),
-            'demod': self.demod
+            regularizers.serialize(self.activity_regularizer),
+            'kernel_constraint':
+            constraints.serialize(self.kernel_constraint),
+            'demod':
+            self.demod
         }
         base_config = super(Conv2DMod, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))

@@ -1,0 +1,6 @@
+*.py[cod]
+/env
+.DS_Store
+/data
+/Models
+/Results
